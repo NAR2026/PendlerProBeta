@@ -17,9 +17,11 @@
     
     #ergebnis { margin-top: 15px; padding: 12px; background: #f0f3f6; border-radius: 8px; font-size: 13px; line-height: 1.5; border-left: 4px solid #005bbf; }
     
-    /* Debug-Fenster */
-    #debug-box { margin-top: 15px; padding: 12px; background: #0f172a; color: #4ade80; font-family: monospace; font-size: 11px; border-radius: 8px; max-height: 180px; overflow-y: auto; border: 1px solid #334155; }
-    #debug-box header { color: #94a3b8; font-weight: bold; margin-bottom: 6px; border-b: 1px solid #334155; padding-bottom: 4px; }
+    /* Debug-Fenster & Kopier-Button */
+    #debug-box { margin-top: 15px; padding: 12px; background: #0f172a; color: #4ade80; font-family: monospace; font-size: 11px; border-radius: 8px; max-height: 220px; overflow-y: auto; border: 1px solid #334155; }
+    .debug-header { display: flex; justify-content: space-between; align-items: center; color: #94a3b8; font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid #334155; padding-bottom: 4px; }
+    .copy-btn { width: auto; padding: 4px 8px; font-size: 10px; background: #334155; color: #fff; margin-top: 0; border-radius: 4px; }
+    .copy-btn:hover { background: #475569; }
     .log-line { margin-bottom: 3px; white-space: pre-wrap; word-break: break-all; }
   </style>
 </head>
@@ -54,15 +56,17 @@
     <!-- Ergebnisbereich -->
     <div id="ergebnis">Gib die Fahrtdaten ein und starte die Abfrage.</div>
 
-    <!-- Debug-Konsole -->
+    <!-- Debug-Konsole mit Kopier-Button -->
     <div id="debug-box">
-      <header>🐛 DEBUG LOGS</header>
+      <div class="debug-header">
+        <span>🐛 DEBUG LOGS</span>
+        <button class="copy-btn" onclick="copyDebugLogs()">📋 Logs kopieren</button>
+      </div>
       <div id="debug-content">Bereit für Abfrage...</div>
     </div>
   </div>
 
   <script>
-    // Setzt das Datum standardmäßig auf den heutigen Tag
     document.getElementById('datum').valueAsDate = new Date();
 
     function logDebug(msg) {
@@ -71,6 +75,17 @@
       debugContent.innerHTML += `<div class="log-line">[${time}] ${msg}</div>`;
       const debugBox = document.getElementById('debug-box');
       debugBox.scrollTop = debugBox.scrollHeight;
+    }
+
+    function copyDebugLogs() {
+      const debugContent = document.getElementById('debug-content');
+      const textToCopy = debugContent.innerText;
+      
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        alert("Debug-Logs wurden in die Zwischenablage kopiert!");
+      }).catch(err => {
+        alert("Fehler beim Kopieren: " + err);
+      });
     }
 
     async function testAbfrage() {
@@ -94,46 +109,66 @@
       const cleanNum = zugInput.replace(/\D/g, '');
 
       logDebug(`Datum: ${datumEingabe} | Uhrzeit: ${uhrzeitEingabe}`);
-      logDebug(`Bahnhof: "${bahnhof}" | Zug: "${zugInput}" (Extrahiert: ${cleanNum})`);
+      logDebug(`Startbahnhof: "${bahnhof}" | Zug: "${zugInput}" (Ziffern: ${cleanNum})`);
 
       try {
-        // Abfahrten ab 00:00 Uhr des gewählten Tages abrufen
-        const abfahrtsDatum = new Date(`${datumEingabe}T00:00:00`);
-        const isoDate = abfahrtsDatum.toISOString();
+        // 1. Bahnhofs-ID über DB Transport API abfragen
+        const locUrl = `https://v6.db.transport.rest/locations?query=${encodeURIComponent(bahnhof)}&results=1`;
+        logDebug(`Location URL: ${locUrl}`);
+        
+        const locRes = await fetch(locUrl);
+        logDebug(`Location HTTP Status: ${locRes.status}`);
+        if (!locRes.ok) throw new Error(`Bahnhofssuche fehlgeschlagen (Status ${locRes.status})`);
+        
+        const locations = await locRes.json();
+        if (!locations || locations.length === 0) {
+          ergebnisDiv.innerHTML = "Bahnhof nicht gefunden.";
+          logDebug("FEHLER: Bahnhofs-ID konnte nicht ermittelt werden.");
+          return;
+        }
 
-        const irisUrl = `https://marudor.de/api/iris/v2/abfahrten/${encodeURIComponent(bahnhof)}?when=${encodeURIComponent(isoDate)}&lookahead=1440`;
-        logDebug(`Request URL: ${irisUrl}`);
+        const stationId = locations[0].id;
+        const stationName = locations[0].name;
+        logDebug(`Bahnhof gefunden: ${stationName} (ID: ${stationId})`);
 
-        const res = await fetch(irisUrl);
-        logDebug(`HTTP Response Status: ${res.status}`);
+        // ISO Zeitstempel für den gewählten Zeitpunkt zusammenbauen
+        const targetDateTime = new Date(`${datumEingabe}T${uhrzeitEingabe}:00`);
+        const isoWhen = targetDateTime.toISOString();
 
-        if (!res.ok) throw new Error(`Server lieferte HTTP Status ${res.status}`);
+        // 2. Abfahrten ab der gewählten Uhrzeit abfragen (Fenster 360 Minuten)
+        const depUrl = `https://v6.db.transport.rest/stops/${stationId}/departures?when=${encodeURIComponent(isoWhen)}&duration=360`;
+        logDebug(`Departures URL: ${depUrl}`);
 
-        const data = await res.json();
-        const allDepartures = [...(data.departures || []), ...(data.lookahead || [])];
-        logDebug(`Abfahrten am Bahnhof geladen: ${allDepartures.length} Einträge.`);
+        const depRes = await fetch(depUrl);
+        logDebug(`Departures HTTP Status: ${depRes.status}`);
+        if (!depRes.ok) throw new Error(`Abfahrtsabfrage fehlgeschlagen (Status ${depRes.status})`);
 
-        // Den spezifischen Zug über Zugnummer identifizieren
-        const target = allDepartures.find(d => {
-          if (!d.train || !d.train.number) return false;
-          const numStr = d.train.number.toString();
-          const fullName = `${d.train.type || ''} ${d.train.number}`.trim().toUpperCase();
-          return numStr === cleanNum || fullName === zugInput.toUpperCase();
+        const departuresData = await depRes.json();
+        const departures = departuresData.departures || departuresData;
+        logDebug(`Abfahrten im Zeitfenster geladen: ${departures.length} Einträge.`);
+
+        // 3. Zug über Zugnummer identifizieren
+        const target = departures.find(d => {
+          if (!d.line || !d.line.name) return false;
+          const lineNumStr = d.line.name.replace(/\D/g, '');
+          const fullName = d.line.name.trim().toUpperCase();
+          return lineNumStr === cleanNum || fullName === zugInput.toUpperCase();
         });
 
         if (target) {
-          logDebug(`Zug im Fahrplan gefunden! ID: ${target.train.type} ${target.train.number}`);
+          logDebug(`Zug gefunden: ${target.line.name} nach ${target.direction}`);
 
-          const depTime = new Date(target.initialDeparture).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
-          const delay = target.delayDeparture || target.delayArrival || 0;
-          
+          const geplanteZeit = new Date(target.plannedWhen).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+          const tatsaechlicheZeit = target.when ? new Date(target.when).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : geplanteZeit;
+          const delayMins = target.delay ? Math.round(target.delay / 60) : 0;
+
           let statusText = "";
-          if (target.isCancelled) {
+          if (target.cancelled) {
             statusText = "<span style='color:red; font-weight:bold;'>Ausfall / Fällt aus</span>";
             logDebug("Status: ZUGAUSFALL");
-          } else if (delay > 0) {
-            statusText = `<span style='color:red; font-weight:bold;'>+${delay} Min. Verspätung</span>`;
-            logDebug(`Status: VERSPÄTUNG (+${delay} Min)`);
+          } else if (delayMins > 0) {
+            statusText = `<span style='color:red; font-weight:bold;'>+${delayMins} Min. Verspätung</span>`;
+            logDebug(`Status: VERSPÄTUNG (+${delayMins} Min)`);
           } else {
             statusText = "<span style='color:green; font-weight:bold;'>Pünktlich</span>";
             logDebug("Status: PÜNKTLICH");
@@ -142,20 +177,21 @@
           const formatiertesDatum = new Date(datumEingabe).toLocaleDateString('de-DE');
 
           ergebnisDiv.innerHTML = `
-            <strong>Bahnhof:</strong> ${data.station ? data.station.name : bahnhof}<br>
+            <strong>Bahnhof:</strong> ${stationName}<br>
             <strong>Datum:</strong> ${formatiertesDatum}<br>
-            <strong>Zug:</strong> ${target.train.type || ''} ${target.train.number}<br>
-            <strong>Richtung:</strong> ${target.destination}<br>
+            <strong>Zug:</strong> ${target.line.name}<br>
+            <strong>Richtung:</strong> ${target.direction}<br>
             <hr style="border:0; border-top:1px solid #ccc; margin:8px 0;">
-            <strong>Geplante Abfahrt:</strong> ${depTime} Uhr<br>
+            <strong>Geplant:</strong> ${geplanteZeit} Uhr<br>
+            <strong>Tatsächlich:</strong> ${tatsaechlicheZeit} Uhr<br>
             <strong>Status:</strong> ${statusText}
           `;
-          logDebug("ERFOLG: Ergebnisse im Formular gerendert.");
+          logDebug("ERFOLG: Auswertung gerendert.");
 
         } else {
           const formatiertesDatum = new Date(datumEingabe).toLocaleDateString('de-DE');
-          ergebnisDiv.innerHTML = `Zug <strong>${zugInput}</strong> wurde am <strong>${formatiertesDatum}</strong> nicht im Fahrplan von <strong>${bahnhof}</strong> gefunden.`;
-          logDebug("FEHLER: Zugnummer in der Abfahrtstafel nicht enthalten.");
+          ergebnisDiv.innerHTML = `Zug <strong>${zugInput}</strong> wurde am <strong>${formatiertesDatum}</strong> um <strong>${uhrzeitEingabe} Uhr</strong> an der Station <strong>${stationName}</strong> nicht gefunden.`;
+          logDebug("FEHLER: Zugnummer nicht in den Abfahrten enthalten.");
         }
 
       } catch (err) {
@@ -167,3 +203,4 @@
 
 </body>
 </html>
+ 
