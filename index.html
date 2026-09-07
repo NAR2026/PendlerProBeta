@@ -3,60 +3,117 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>DB Echtzeit Test</title>
+  <title>DB Live Test Formular</title>
   <style>
-    body { font-family: sans-serif; padding: 20px; max-width: 400px; margin: auto; background: #f4f4f9; }
-    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; padding: 20px; max-width: 480px; margin: auto; background: #f4f5f8; }
+    .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
     .form-group { margin-bottom: 12px; }
-    label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 4px; }
+    .form-row { display: flex; gap: 10px; }
+    .form-row .form-group { flex: 1; }
+    label { display: block; font-size: 12px; font-weight: bold; margin-bottom: 4px; color: #333; }
     input, button { width: 100%; padding: 10px; box-sizing: border-box; font-size: 14px; border-radius: 6px; border: 1px solid #ccc; }
-    button { background: #e0001b; color: white; border: none; font-weight: bold; margin-top: 10px; cursor: pointer; }
-    #ergebnis { margin-top: 15px; padding: 12px; background: #eee; border-radius: 6px; font-size: 13px; line-height: 1.4; }
+    button { background: #e0001b; color: white; border: none; font-weight: bold; margin-top: 8px; cursor: pointer; }
+    button:active { background: #b50015; }
+    
+    #ergebnis { margin-top: 15px; padding: 12px; background: #f0f3f6; border-radius: 8px; font-size: 13px; line-height: 1.5; border-left: 4px solid #005bbf; }
+    
+    /* Debug-Fenster */
+    #debug-box { margin-top: 15px; padding: 12px; background: #0f172a; color: #4ade80; font-family: monospace; font-size: 11px; border-radius: 8px; max-height: 180px; overflow-y: auto; border: 1px solid #334155; }
+    #debug-box header { color: #94a3b8; font-weight: bold; margin-bottom: 6px; border-b: 1px solid #334155; padding-bottom: 4px; }
+    .log-line { margin-bottom: 3px; white-space: pre-wrap; word-break: break-all; }
   </style>
 </head>
 <body>
 
   <div class="card">
-    <h3>DB Echtzeit-Daten Test</h3>
+    <h3 style="margin-top:0;">DB Live-Daten Test</h3>
     
-    <div class="form-group">
-      <label>Startbahnhof:</label>
-      <input type="text" id="bahnhof" value="Bremen Hbf">
+    <div class="form-row">
+      <div class="form-group">
+        <label for="datum">Datum der Fahrt:</label>
+        <input type="date" id="datum">
+      </div>
+      <div class="form-group">
+        <label for="uhrzeit">Geplante Zeit:</label>
+        <input type="time" id="uhrzeit" value="09:17">
+      </div>
     </div>
 
     <div class="form-group">
-      <label>Zugtyp & Nummer:</label>
-      <input type="text" id="zug" value="ICE 618">
+      <label for="bahnhof">Startbahnhof:</label>
+      <input type="text" id="bahnhof" value="Bremen Hbf" placeholder="z. B. Bremen Hbf">
+    </div>
+
+    <div class="form-group">
+      <label for="zug">Zugtyp & Nummer:</label>
+      <input type="text" id="zug" value="ICE 618" placeholder="z. B. ICE 618">
     </div>
 
     <button onclick="testAbfrage()">Echtzeitdaten prüfen</button>
 
-    <div id="ergebnis">Gib die Daten ein und klicke auf Prüfen.</div>
+    <!-- Ergebnisbereich -->
+    <div id="ergebnis">Gib die Fahrtdaten ein und starte die Abfrage.</div>
+
+    <!-- Debug-Konsole -->
+    <div id="debug-box">
+      <header>🐛 DEBUG LOGS</header>
+      <div id="debug-content">Bereit für Abfrage...</div>
+    </div>
   </div>
 
   <script>
+    // Setzt das Datum standardmäßig auf den heutigen Tag
+    document.getElementById('datum').valueAsDate = new Date();
+
+    function logDebug(msg) {
+      const debugContent = document.getElementById('debug-content');
+      const time = new Date().toLocaleTimeString();
+      debugContent.innerHTML += `<div class="log-line">[${time}] ${msg}</div>`;
+      const debugBox = document.getElementById('debug-box');
+      debugBox.scrollTop = debugBox.scrollHeight;
+    }
+
     async function testAbfrage() {
+      const datumEingabe = document.getElementById('datum').value;
+      const uhrzeitEingabe = document.getElementById('uhrzeit').value;
       const bahnhof = document.getElementById('bahnhof').value.trim();
       const zugInput = document.getElementById('zug').value.trim();
       const ergebnisDiv = document.getElementById('ergebnis');
+      const debugContent = document.getElementById('debug-content');
 
-      if (!bahnhof || !zugInput) {
+      debugContent.innerHTML = "";
+      logDebug("=== INITIALISIERE ABFRAGE ===");
+
+      if (!datumEingabe || !uhrzeitEingabe || !bahnhof || !zugInput) {
         ergebnisDiv.innerHTML = "<span style='color:red;'>Bitte alle Felder ausfüllen.</span>";
+        logDebug("FEHLER: Unvollständige Formular-Eingabe.");
         return;
       }
 
-      ergebnisDiv.innerHTML = "⏳ Lade Daten...";
+      ergebnisDiv.innerHTML = "⏳ Lade Live-Daten der Deutschen Bahn...";
       const cleanNum = zugInput.replace(/\D/g, '');
 
-      try {
-        const irisUrl = `https://marudor.de/api/iris/v2/abfahrten/${encodeURIComponent(bahnhof)}?lookahead=720`;
-        const res = await fetch(irisUrl);
+      logDebug(`Datum: ${datumEingabe} | Uhrzeit: ${uhrzeitEingabe}`);
+      logDebug(`Bahnhof: "${bahnhof}" | Zug: "${zugInput}" (Extrahiert: ${cleanNum})`);
 
-        if (!res.ok) throw new Error(`Status ${res.status}`);
+      try {
+        // Abfahrten ab 00:00 Uhr des gewählten Tages abrufen
+        const abfahrtsDatum = new Date(`${datumEingabe}T00:00:00`);
+        const isoDate = abfahrtsDatum.toISOString();
+
+        const irisUrl = `https://marudor.de/api/iris/v2/abfahrten/${encodeURIComponent(bahnhof)}?when=${encodeURIComponent(isoDate)}&lookahead=1440`;
+        logDebug(`Request URL: ${irisUrl}`);
+
+        const res = await fetch(irisUrl);
+        logDebug(`HTTP Response Status: ${res.status}`);
+
+        if (!res.ok) throw new Error(`Server lieferte HTTP Status ${res.status}`);
 
         const data = await res.json();
         const allDepartures = [...(data.departures || []), ...(data.lookahead || [])];
+        logDebug(`Abfahrten am Bahnhof geladen: ${allDepartures.length} Einträge.`);
 
+        // Den spezifischen Zug über Zugnummer identifizieren
         const target = allDepartures.find(d => {
           if (!d.train || !d.train.number) return false;
           const numStr = d.train.number.toString();
@@ -65,24 +122,45 @@
         });
 
         if (target) {
+          logDebug(`Zug im Fahrplan gefunden! ID: ${target.train.type} ${target.train.number}`);
+
           const depTime = new Date(target.initialDeparture).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
           const delay = target.delayDeparture || target.delayArrival || 0;
-          const statusText = target.isCancelled 
-            ? "<span style='color:red; font-weight:bold;'>Ausfall</span>" 
-            : (delay > 0 ? `<span style='color:red; font-weight:bold;'>+${delay} Min. Verspätung</span>` : "<span style='color:green; font-weight:bold;'>Pünktlich</span>");
+          
+          let statusText = "";
+          if (target.isCancelled) {
+            statusText = "<span style='color:red; font-weight:bold;'>Ausfall / Fällt aus</span>";
+            logDebug("Status: ZUGAUSFALL");
+          } else if (delay > 0) {
+            statusText = `<span style='color:red; font-weight:bold;'>+${delay} Min. Verspätung</span>`;
+            logDebug(`Status: VERSPÄTUNG (+${delay} Min)`);
+          } else {
+            statusText = "<span style='color:green; font-weight:bold;'>Pünktlich</span>";
+            logDebug("Status: PÜNKTLICH");
+          }
+
+          const formatiertesDatum = new Date(datumEingabe).toLocaleDateString('de-DE');
 
           ergebnisDiv.innerHTML = `
+            <strong>Bahnhof:</strong> ${data.station ? data.station.name : bahnhof}<br>
+            <strong>Datum:</strong> ${formatiertesDatum}<br>
             <strong>Zug:</strong> ${target.train.type || ''} ${target.train.number}<br>
             <strong>Richtung:</strong> ${target.destination}<br>
+            <hr style="border:0; border-top:1px solid #ccc; margin:8px 0;">
             <strong>Geplante Abfahrt:</strong> ${depTime} Uhr<br>
             <strong>Status:</strong> ${statusText}
           `;
+          logDebug("ERFOLG: Ergebnisse im Formular gerendert.");
+
         } else {
-          ergebnisDiv.innerHTML = `Zug <strong>${zugInput}</strong> wurde an der Station <strong>${bahnhof}</strong> nicht in der Abfahrtstafel gefunden.`;
+          const formatiertesDatum = new Date(datumEingabe).toLocaleDateString('de-DE');
+          ergebnisDiv.innerHTML = `Zug <strong>${zugInput}</strong> wurde am <strong>${formatiertesDatum}</strong> nicht im Fahrplan von <strong>${bahnhof}</strong> gefunden.`;
+          logDebug("FEHLER: Zugnummer in der Abfahrtstafel nicht enthalten.");
         }
 
       } catch (err) {
-        ergebnisDiv.innerHTML = `<span style='color:red;'><strong>Fehler:</strong> ${err.message}</span>`;
+        logDebug(`EXCEPTION: ${err.message}`);
+        ergebnisDiv.innerHTML = `<span style='color:red;'><strong>Fehler bei Abfrage:</strong> ${err.message}</span>`;
       }
     }
   </script>
