@@ -14,19 +14,27 @@
     input, button { width: 100%; padding: 10px; box-sizing: border-box; font-size: 14px; border-radius: 6px; border: 1px solid #ccc; }
     button { background: #e0001b; color: white; border: none; font-weight: bold; margin-top: 8px; cursor: pointer; }
     button:active { background: #b50015; }
-    button:disabled { opacity: .6; cursor: wait; }
+    .source-note { font-size: 10px; color: #94a3b8; margin-top: -6px; margin-bottom: 10px; }
+
     #ergebnis { margin-top: 15px; padding: 12px; background: #f0f3f6; border-radius: 8px; font-size: 13px; line-height: 1.5; border-left: 4px solid #005bbf; }
-    #debug-box { margin-top: 15px; padding: 12px; background: #0f172a; color: #4ade80; font-family: monospace; font-size: 11px; border-radius: 8px; max-height: 260px; overflow-y: auto; border: 1px solid #334155; }
+    #ergebnis.warn { background: #fff7ed; border-left-color: #ea580c; }
+    #ergebnis.error { background: #fef2f2; border-left-color: #dc2626; }
+
+    /* Debug-Fenster & Kopier-Button */
+    #debug-box { margin-top: 15px; padding: 12px; background: #0f172a; color: #4ade80; font-family: monospace; font-size: 11px; border-radius: 8px; max-height: 220px; overflow-y: auto; border: 1px solid #334155; }
     .debug-header { display: flex; justify-content: space-between; align-items: center; color: #94a3b8; font-weight: bold; margin-bottom: 8px; border-bottom: 1px solid #334155; padding-bottom: 4px; }
     .copy-btn { width: auto; padding: 4px 8px; font-size: 10px; background: #334155; color: #fff; margin-top: 0; border-radius: 4px; }
     .copy-btn:hover { background: #475569; }
     .log-line { margin-bottom: 3px; white-space: pre-wrap; word-break: break-all; }
-    .hint { color:#64748b; font-size:11px; margin-top:8px; }
+    .log-error { color: #f87171; }
+    .log-warn { color: #fbbf24; }
   </style>
 </head>
 <body>
+
   <div class="card">
     <h3 style="margin-top:0;">DB Live-Daten Test</h3>
+    <p class="source-note">Datenquelle: Transitous / MOTIS (community-betriebener Open-Data-Dienst)</p>
 
     <div class="form-row">
       <div class="form-group">
@@ -49,11 +57,12 @@
       <input type="text" id="zug" value="ICE 618" placeholder="z. B. ICE 618">
     </div>
 
-    <button id="btn-test" onclick="testAbfrage()">Echtzeitdaten prüfen</button>
-    <div class="hint">Die Abfrage versucht zuerst die DB-API direkt. Falls der Browser wegen CORS blockiert, werden zwei öffentliche CORS-Proxys als Fallback getestet.</div>
+    <button onclick="testAbfrage()">Echtzeitdaten prüfen</button>
 
+    <!-- Ergebnisbereich -->
     <div id="ergebnis">Gib die Fahrtdaten ein und starte die Abfrage.</div>
 
+    <!-- Debug-Konsole mit Kopier-Button -->
     <div id="debug-box">
       <div class="debug-header">
         <span>🐛 DEBUG LOGS</span>
@@ -66,130 +75,82 @@
   <script>
     document.getElementById('datum').valueAsDate = new Date();
 
-    const API_BASE = 'https://v6.db.transport.rest';
-    const PROXY_URLS = [
-      target => target,
-      target => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(target),
-      target => 'https://corsproxy.io/?url=' + encodeURIComponent(target)
-    ];
+    const TRANSITOUS_BASE = 'https://api.transitous.org';
+    const FETCH_TIMEOUT_MS = 10000;
 
-    function logDebug(msg) {
+    function logDebug(msg, level) {
       const debugContent = document.getElementById('debug-content');
-      const time = new Date().toLocaleTimeString('de-DE');
-      const line = document.createElement('div');
-      line.className = 'log-line';
-      line.textContent = `[${time}] ${msg}`;
-      debugContent.appendChild(line);
+      const time = new Date().toLocaleTimeString();
+      const cls = level === 'error' ? 'log-error' : (level === 'warn' ? 'log-warn' : '');
+      debugContent.innerHTML += `<div class="log-line ${cls}">[${time}] ${msg}</div>`;
       const debugBox = document.getElementById('debug-box');
       debugBox.scrollTop = debugBox.scrollHeight;
     }
 
     function copyDebugLogs() {
-      const textToCopy = document.getElementById('debug-content').innerText;
-      if (navigator.clipboard && window.isSecureContext) {
-        navigator.clipboard.writeText(textToCopy)
-          .then(() => alert('Debug-Logs wurden in die Zwischenablage kopiert!'))
-          .catch(err => alert('Fehler beim Kopieren: ' + err));
-      } else {
-        const ta = document.createElement('textarea');
-        ta.value = textToCopy;
-        document.body.appendChild(ta);
-        ta.select();
-        try { document.execCommand('copy'); alert('Debug-Logs wurden kopiert!'); }
-        catch (err) { alert('Kopieren nicht möglich: ' + err); }
-        ta.remove();
-      }
+      const debugContent = document.getElementById('debug-content');
+      navigator.clipboard.writeText(debugContent.innerText).then(() => {
+        alert("Debug-Logs wurden in die Zwischenablage kopiert!");
+      }).catch(err => {
+        alert("Fehler beim Kopieren: " + err);
+      });
     }
 
-    function buildLocalIso(dateString, timeString) {
-      // Übergibt die lokale Browserzeit mit Offset an die API.
-      const [y, m, d] = dateString.split('-').map(Number);
-      const [hh, mm] = timeString.split(':').map(Number);
-      const local = new Date(y, m - 1, d, hh, mm, 0, 0);
-      const offset = -local.getTimezoneOffset();
-      const sign = offset >= 0 ? '+' : '-';
-      const abs = Math.abs(offset);
-      const oh = String(Math.floor(abs / 60)).padStart(2, '0');
-      const om = String(abs % 60).padStart(2, '0');
-      return `${y}-${String(m).padStart(2,'0')}-${String(d).padStart(2,'0')}T${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')}:00${sign}${oh}:${om}`;
+    function setErgebnis(html, kind) {
+      const ergebnisDiv = document.getElementById('ergebnis');
+      ergebnisDiv.innerHTML = html;
+      ergebnisDiv.classList.remove('warn', 'error');
+      if (kind === 'warn') ergebnisDiv.classList.add('warn');
+      if (kind === 'error') ergebnisDiv.classList.add('error');
     }
 
-    function formatDateTime(value) {
-      if (!value) return '—';
-      const d = new Date(value);
-      if (Number.isNaN(d.getTime())) return '—';
-      return d.toLocaleTimeString('de-DE', { hour: '2-digit', minute: '2-digit' });
-    }
+    class ApiError extends Error {}
 
-    async function fetchWithTimeout(url, timeoutMs = 12000) {
+    async function fetchMitTimeout(url, timeoutMs) {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          cache: 'no-store',
-          signal: controller.signal
-        });
-        return response;
+        return await fetch(url, { signal: controller.signal });
       } finally {
         clearTimeout(timer);
       }
     }
 
-    async function fetchJsonRobust(targetUrl, label) {
-      let lastError = null;
+    async function parseJsonResponse(res, schrittName) {
+      const contentType = res.headers.get('content-type') || '';
+      logDebug(`${schrittName}: HTTP ${res.status}, Content-Type: ${contentType || 'unbekannt'}`);
 
-      for (let i = 0; i < PROXY_URLS.length; i++) {
-        const requestUrl = PROXY_URLS[i](targetUrl);
-        const mode = i === 0 ? 'direkt' : (i === 1 ? 'AllOrigins' : 'Corsproxy');
-        logDebug(`${label}: Versuch ${i + 1}/${PROXY_URLS.length} über ${mode}`);
-        if (i > 0) logDebug(`Proxy-URL: ${requestUrl}`);
-
-        try {
-          const response = await fetchWithTimeout(requestUrl);
-          logDebug(`${label}: HTTP ${response.status} (${mode})`);
-
-          if (!response.ok) {
-            throw new Error(`HTTP ${response.status}`);
-          }
-
-          const text = await response.text();
-          if (!text || !text.trim()) throw new Error('Leere Antwort');
-
-          let data;
-          try {
-            data = JSON.parse(text);
-          } catch (jsonError) {
-            throw new Error('Antwort ist kein gültiges JSON');
-          }
-
-          logDebug(`${label}: Antwort erfolgreich über ${mode} geladen.`);
-          return data;
-        } catch (err) {
-          lastError = err;
-          const reason = err.name === 'AbortError' ? 'Timeout nach 12 Sekunden' : err.message;
-          logDebug(`${label}: ${mode} fehlgeschlagen → ${reason}`);
-        }
+      if (!res.ok) {
+        const bodyText = await res.text().catch(() => '');
+        logDebug(`${schrittName}: Fehlerantwort: ${bodyText.substring(0, 150)}`, 'warn');
+        throw new ApiError(`${schrittName} fehlgeschlagen (HTTP ${res.status}). Die Transitous-API ist vermutlich gerade nicht erreichbar oder überlastet.`);
       }
 
-      throw new Error(`${label} konnte nicht geladen werden. Letzter Fehler: ${lastError ? lastError.message : 'unbekannt'}`);
+      if (!contentType.includes('application/json')) {
+        const text = await res.text().catch(() => '');
+        logDebug(`${schrittName}: Unerwarteter Body (kein JSON): ${text.substring(0, 120)}...`, 'warn');
+        throw new ApiError(`${schrittName} lieferte keine gültigen Daten zurück. Die Transitous-API ist vermutlich gerade nicht erreichbar.`);
+      }
+
+      return res.json();
     }
 
-    function normalizeTrainNumber(value) {
-      return (value || '').replace(/\D/g, '');
+    async function fetchGeschuetzt(url, schrittName) {
+      let res;
+      try {
+        res = await fetchMitTimeout(url, FETCH_TIMEOUT_MS);
+      } catch (netErr) {
+        if (netErr.name === 'AbortError') {
+          throw new ApiError(`Zeitüberschreitung bei "${schrittName}". Die Transitous-API ist vermutlich gerade überlastet oder nicht verfügbar.`);
+        }
+        throw new ApiError(`Verbindung zu Transitous fehlgeschlagen bei "${schrittName}" (Netzwerk/Ausfall). Bitte später erneut versuchen oder die Daten manuell eintragen.`);
+      }
+      return parseJsonResponse(res, schrittName);
     }
 
-    function trainMatches(line, requested) {
-      if (!line) return false;
-      const wantedFull = requested.trim().toUpperCase();
-      const lineName = String(line.name || '').trim().toUpperCase();
-      const lineNumber = normalizeTrainNumber(lineName);
-      const wantedNumber = normalizeTrainNumber(wantedFull);
-
-      return lineName === wantedFull ||
-             (wantedNumber && lineNumber === wantedNumber) ||
-             lineName.includes(wantedFull);
+    function formatZeit(iso) {
+      if (!iso) return null;
+      return new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     }
 
     async function testAbfrage() {
@@ -197,130 +158,123 @@
       const uhrzeitEingabe = document.getElementById('uhrzeit').value;
       const bahnhof = document.getElementById('bahnhof').value.trim();
       const zugInput = document.getElementById('zug').value.trim();
-      const ergebnisDiv = document.getElementById('ergebnis');
       const debugContent = document.getElementById('debug-content');
-      const button = document.getElementById('btn-test');
+      const btn = document.querySelector('button');
 
-      debugContent.innerHTML = '';
-      logDebug('=== INITIALISIERE ABFRAGE ===');
+      debugContent.innerHTML = "";
+      logDebug("=== INITIALISIERE ABFRAGE (Transitous/MOTIS) ===");
 
       if (!datumEingabe || !uhrzeitEingabe || !bahnhof || !zugInput) {
-        ergebnisDiv.innerHTML = "<span style='color:red;'>Bitte alle Felder ausfüllen.</span>";
-        logDebug('FEHLER: Unvollständige Formular-Eingabe.');
+        setErgebnis("Bitte alle Felder ausfüllen.", 'warn');
+        logDebug("FEHLER: Unvollständige Formular-Eingabe.", 'error');
         return;
       }
 
-      button.disabled = true;
-      button.textContent = '⏳ Abfrage läuft ...';
-      ergebnisDiv.innerHTML = '⏳ Lade Live-Daten der Deutschen Bahn ...';
-
-      const cleanNum = normalizeTrainNumber(zugInput);
-      const requestedTime = buildLocalIso(datumEingabe, uhrzeitEingabe);
+      setErgebnis("⏳ Lade Live-Daten (Transitous)...");
+      btn.disabled = true;
+      const cleanNum = zugInput.replace(/\D/g, '');
 
       logDebug(`Datum: ${datumEingabe} | Uhrzeit: ${uhrzeitEingabe}`);
-      logDebug(`Startbahnhof: "${bahnhof}" | Zug: "${zugInput}" | Nummer: ${cleanNum}`);
-      logDebug(`API-Zeitstempel: ${requestedTime}`);
+      logDebug(`Startbahnhof: "${bahnhof}" | Zug: "${zugInput}" (Ziffern: ${cleanNum})`);
 
       try {
-        // 1. Bahnhof suchen. Mehrere Treffer laden und den passendsten wählen.
-        const locUrl = `${API_BASE}/locations?query=${encodeURIComponent(bahnhof)}&results=8`;
-        logDebug(`Location URL: ${locUrl}`);
-        const locations = await fetchJsonRobust(locUrl, 'Bahnhofssuche');
+        // 1. Bahnhof per Geocoding auflösen
+        const geoUrl = `${TRANSITOUS_BASE}/api/v1/geocode?text=${encodeURIComponent(bahnhof)}&type=STOP`;
+        logDebug(`Geocode URL: ${geoUrl}`);
 
-        if (!Array.isArray(locations) || locations.length === 0) {
-          throw new Error(`Bahnhof "${bahnhof}" wurde nicht gefunden.`);
-        }
+        const matches = await fetchGeschuetzt(geoUrl, 'Bahnhofssuche');
 
-        const normalizedWantedStation = bahnhof.toLowerCase().replace(/\s+/g, ' ').trim();
-        const station = locations.find(x => String(x.name || '').toLowerCase().replace(/\s+/g, ' ').trim() === normalizedWantedStation)
-          || locations.find(x => x.type === 'stop' || x.type === 'station')
-          || locations[0];
-
-        const stationId = station.id;
-        const stationName = station.name || bahnhof;
-
-        if (!stationId) throw new Error('Die Bahnhofssuche lieferte keine gültige Stations-ID.');
-        logDebug(`Bahnhof gefunden: ${stationName} (ID: ${stationId})`);
-
-        // 2. Abfahrten rund um die gewünschte Zeit laden.
-        const depUrl = `${API_BASE}/stops/${encodeURIComponent(stationId)}/departures?when=${encodeURIComponent(requestedTime)}&duration=360`;
-        logDebug(`Departures URL: ${depUrl}`);
-        const departuresData = await fetchJsonRobust(depUrl, 'Abfahrtsabfrage');
-        const departures = Array.isArray(departuresData) ? departuresData : (departuresData.departures || []);
-
-        logDebug(`Abfahrten geladen: ${departures.length} Einträge.`);
-
-        // 3. Gewünschten Zug suchen.
-        const target = departures.find(d => trainMatches(d.line, zugInput));
-
-        if (!target) {
-          const examples = departures.slice(0, 8).map(d => d.line && d.line.name).filter(Boolean);
-          logDebug(`Keine passende Zugnummer gefunden. Beispiele: ${examples.join(', ') || 'keine'}`);
-          const formatiertesDatum = new Date(`${datumEingabe}T00:00:00`).toLocaleDateString('de-DE');
-          ergebnisDiv.innerHTML = `Zug <strong>${zugInput}</strong> wurde am <strong>${formatiertesDatum}</strong> ab ca. <strong>${uhrzeitEingabe} Uhr</strong> an <strong>${stationName}</strong> nicht gefunden.<br><br><small>Bitte prüfe Datum, Uhrzeit und Zugnummer. Im Debug-Log stehen die ersten gefundenen Züge.</small>`;
+        if (!matches || matches.length === 0) {
+          setErgebnis("Bahnhof nicht gefunden. Bitte Schreibweise prüfen (z. B. \"Bremen Hbf\").", 'warn');
+          logDebug("FEHLER: Kein Treffer für Bahnhofsnamen.", 'warn');
           return;
         }
 
-        logDebug(`Zug gefunden: ${target.line?.name || zugInput} → ${target.direction || 'Richtung unbekannt'}`);
+        const station = matches[0];
+        logDebug(`Bahnhof gefunden: ${station.name} (ID: ${station.id})`);
 
-        const planned = target.plannedWhen || target.plannedDeparture || target.when;
-        const realtime = target.when || target.realtimeWhen || target.realtimeDeparture || null;
-        const geplanteZeit = formatDateTime(planned);
-        const tatsaechlicheZeit = formatDateTime(realtime || planned);
-        const delayMins = Number.isFinite(Number(target.delay)) ? Math.round(Number(target.delay) / 60) : 0;
+        // 2. Zeitfenster: etwas vor der geplanten Zeit starten, damit der Zug sicher im Ergebnis auftaucht
+        const targetDateTime = new Date(`${datumEingabe}T${uhrzeitEingabe}:00`);
+        const suchZeit = new Date(targetDateTime.getTime() - 10 * 60000); // 10 Min. Puffer
+        const isoWhen = suchZeit.toISOString();
 
-        let statusText = '';
-        if (target.cancelled) {
-          statusText = "<span style='color:red; font-weight:bold;'>Ausfall / Fällt aus</span>";
-          logDebug('Status: ZUGAUSFALL');
-        } else if (delayMins > 0) {
-          statusText = `<span style='color:red; font-weight:bold;'>+${delayMins} Min. Verspätung</span>`;
-          logDebug(`Status: VERSPÄTUNG (+${delayMins} Min)`);
-        } else if (delayMins < 0) {
-          statusText = `<span style='color:#b45309; font-weight:bold;'>${delayMins} Min. früher</span>`;
-          logDebug(`Status: ${Math.abs(delayMins)} Min früher`);
+        const stUrl = `${TRANSITOUS_BASE}/api/v5/stoptimes?stopId=${encodeURIComponent(station.id)}&time=${encodeURIComponent(isoWhen)}&n=25&arriveBy=false`;
+        logDebug(`Stoptimes URL: ${stUrl}`);
+
+        const stopTimesRes = await fetchGeschuetzt(stUrl, 'Abfahrtsabfrage');
+        const stopTimes = stopTimesRes.stopTimes || [];
+        logDebug(`Abfahrten geladen: ${stopTimes.length} Einträge.`);
+
+        // 3. Zug über Zugnummer/-name identifizieren
+        const target = stopTimes.find(st => {
+          const candidates = [st.displayName, st.routeShortName, st.tripShortName]
+            .filter(Boolean)
+            .map(s => s.toUpperCase());
+          const candidateDigits = candidates.map(s => s.replace(/\D/g, ''));
+          return candidates.includes(zugInput.toUpperCase()) || candidateDigits.includes(cleanNum);
+        });
+
+        if (target) {
+          const p = target.place || {};
+          const geplant = p.scheduledDeparture || p.scheduledArrival;
+          const tatsaechlich = p.departure || p.arrival || geplant;
+
+          logDebug(`Zug gefunden: ${target.displayName || target.routeShortName} Richtung ${target.headsign || (target.tripTo && target.tripTo.name) || '?'}`);
+
+          const geplanteZeit = formatZeit(geplant);
+          const tatsaechlicheZeit = formatZeit(tatsaechlich) || geplanteZeit;
+          const delayMins = (geplant && tatsaechlich) ? Math.round((new Date(tatsaechlich) - new Date(geplant)) / 60000) : 0;
+
+          let statusText = "";
+          if (p.cancelled) {
+            statusText = "<span style='color:red; font-weight:bold;'>Ausfall / Fällt aus</span>";
+            logDebug("Status: ZUGAUSFALL");
+          } else if (delayMins > 0) {
+            statusText = `<span style='color:red; font-weight:bold;'>+${delayMins} Min. Verspätung</span>`;
+            logDebug(`Status: VERSPÄTUNG (+${delayMins} Min)`);
+          } else {
+            statusText = "<span style='color:green; font-weight:bold;'>Pünktlich</span>";
+            logDebug("Status: PÜNKTLICH");
+          }
+
+          const formatiertesDatum = new Date(datumEingabe).toLocaleDateString('de-DE');
+
+          setErgebnis(`
+            <strong>Bahnhof:</strong> ${station.name}<br>
+            <strong>Datum:</strong> ${formatiertesDatum}<br>
+            <strong>Zug:</strong> ${target.displayName || target.routeShortName || zugInput}<br>
+            <strong>Richtung:</strong> ${target.headsign || (target.tripTo && target.tripTo.name) || '–'}<br>
+            <hr style="border:0; border-top:1px solid #ccc; margin:8px 0;">
+            <strong>Geplant:</strong> ${geplanteZeit || '–'} Uhr<br>
+            <strong>Tatsächlich:</strong> ${tatsaechlicheZeit || '–'} Uhr<br>
+            <strong>Status:</strong> ${statusText}
+            <p style="font-size:10px; color:#94a3b8; margin-top:8px;">Quelle: Transitous (Open-Data), keine offizielle DB-Angabe.</p>
+          `);
+          logDebug("ERFOLG: Auswertung gerendert.");
+
         } else {
-          statusText = "<span style='color:green; font-weight:bold;'>Pünktlich</span>";
-          logDebug('Status: PÜNKTLICH');
+          const formatiertesDatum = new Date(datumEingabe).toLocaleDateString('de-DE');
+          setErgebnis(`Zug <strong>${zugInput}</strong> wurde am <strong>${formatiertesDatum}</strong> um <strong>${uhrzeitEingabe} Uhr</strong> an der Station <strong>${station.name}</strong> nicht in den Transitous-Daten gefunden. Möglicherweise fährt er zu diesem Zeitpunkt nicht, der Name weicht ab, oder Transitous hat diese Linie (noch) nicht im Datenbestand.`, 'warn');
+          logDebug("FEHLER: Zugnummer nicht in den Abfahrten enthalten.", 'warn');
         }
 
-        const formatiertesDatum = new Date(`${datumEingabe}T00:00:00`).toLocaleDateString('de-DE');
-        const realtimeHinweis = realtime ? '' : '<br><small style="color:#64748b;">Für diesen Zug wurde keine abweichende Echtzeit gemeldet.</small>';
-
-        ergebnisDiv.innerHTML = `
-          <strong>Bahnhof:</strong> ${escapeHtml(stationName)}<br>
-          <strong>Datum:</strong> ${formatiertesDatum}<br>
-          <strong>Zug:</strong> ${escapeHtml(target.line?.name || zugInput)}<br>
-          <strong>Richtung:</strong> ${escapeHtml(target.direction || '—')}<br>
-          <hr style="border:0; border-top:1px solid #ccc; margin:8px 0;">
-          <strong>Geplant:</strong> ${geplanteZeit} Uhr<br>
-          <strong>Tatsächlich:</strong> ${tatsaechlicheZeit} Uhr<br>
-          <strong>Status:</strong> ${statusText}${realtimeHinweis}
-        `;
-
-        logDebug(`Geplant: ${planned || 'nicht vorhanden'}`);
-        logDebug(`Echtzeit: ${realtime || 'keine abweichende Echtzeit'}`);
-        logDebug(`Delay-Rohwert: ${target.delay ?? 'null'}`);
-        logDebug('ERFOLG: Auswertung gerendert.');
-
       } catch (err) {
-        logDebug(`EXCEPTION: ${err.message}`);
-        ergebnisDiv.innerHTML = `<span style='color:red;'><strong>Fehler bei Abfrage:</strong><br>${escapeHtml(err.message)}</span><br><br><small>Wenn im Log mehrfach "CORS" oder "Failed to fetch" steht, liegt das sehr wahrscheinlich an der Browser-Schnittstelle zur öffentlichen DB-API und nicht an deinen Eingabedaten.</small>`;
+        if (err instanceof ApiError) {
+          logDebug(`API-PROBLEM: ${err.message}`, 'error');
+          setErgebnis(`
+            <strong>⚠️ Live-API aktuell nicht erreichbar</strong><br>
+            ${err.message}<br><br>
+            Bitte trage die Zeiten in diesem Fall manuell in dein Fahrtenbuch ein.
+          `, 'error');
+        } else {
+          logDebug(`UNERWARTETE EXCEPTION: ${err.message}`, 'error');
+          setErgebnis(`<strong>Unerwarteter Fehler:</strong> ${err.message}`, 'error');
+        }
       } finally {
-        button.disabled = false;
-        button.textContent = 'Echtzeitdaten prüfen';
+        btn.disabled = false;
       }
     }
-
-    function escapeHtml(value) {
-      return String(value ?? '')
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#039;');
-    }
   </script>
+
 </body>
 </html>
- 
