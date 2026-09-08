@@ -205,13 +205,27 @@
         const stopTimes = stopTimesRes.stopTimes || [];
         logDebug(`Abfahrten geladen: ${stopTimes.length} Einträge.`);
 
+        // Diagnose: alle geladenen Abfahrten mit ihren Roh-Namensfeldern auflisten,
+        // damit sichtbar wird, wie Transitous Zugnamen tatsächlich liefert.
+        stopTimes.forEach((st, idx) => {
+          const dep = (st.place && (st.place.departure || st.place.scheduledDeparture)) || '?';
+          logDebug(`  [${idx}] displayName="${st.displayName || ''}" routeShortName="${st.routeShortName || ''}" tripShortName="${st.tripShortName || ''}" headsign="${st.headsign || ''}" agencyName="${st.agencyName || ''}" dep=${formatZeit(dep) || dep}`);
+        });
+
         // 3. Zug über Zugnummer/-name identifizieren
+        // Breiter Match: exakte Übereinstimmung ODER Ziffernfolge als Teilstring
+        // (falls das Namensformat leicht abweicht, z. B. "ICE" separat von der Nummer)
         const target = stopTimes.find(st => {
-          const candidates = [st.displayName, st.routeShortName, st.tripShortName]
+          const candidates = [st.displayName, st.routeShortName, st.tripShortName, st.headsign]
             .filter(Boolean)
             .map(s => s.toUpperCase());
           const candidateDigits = candidates.map(s => s.replace(/\D/g, ''));
-          return candidates.includes(zugInput.toUpperCase()) || candidateDigits.includes(cleanNum);
+
+          const exactMatch = candidates.includes(zugInput.toUpperCase());
+          const digitMatch = cleanNum && candidateDigits.some(d => d === cleanNum);
+          const digitSubstringMatch = cleanNum && candidateDigits.some(d => d.length > 0 && (d.includes(cleanNum) || cleanNum.includes(d)));
+
+          return exactMatch || digitMatch || digitSubstringMatch;
         });
 
         if (target) {
