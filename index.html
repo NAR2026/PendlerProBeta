@@ -33,7 +33,7 @@
 <body>
 
   <div class="card">
-    <h3 style="margin-top:0;">DB Live-Daten Test</h3>
+    <h3 style="margin-top:0;">DB Live-Daten Test <span style="font-size:11px; font-weight:normal; color:#94a3b8;">v1.0</span></h3>
     <p class="source-note">Datenquelle: Transitous / MOTIS (community-betriebener Open-Data-Dienst)</p>
 
     <div class="form-row">
@@ -162,7 +162,7 @@
       const btn = document.querySelector('button');
 
       debugContent.innerHTML = "";
-      logDebug("=== INITIALISIERE ABFRAGE (Transitous/MOTIS) ===");
+      logDebug("=== INITIALISIERE ABFRAGE (Transitous/MOTIS) — App-Version v1.0 ===");
 
       if (!datumEingabe || !uhrzeitEingabe || !bahnhof || !zugInput) {
         setErgebnis("Bitte alle Felder ausfüllen.", 'warn');
@@ -198,8 +198,11 @@
         const suchZeit = new Date(targetDateTime.getTime() - 10 * 60000); // 10 Min. Puffer
         const isoWhen = suchZeit.toISOString();
 
-        const stUrl = `${TRANSITOUS_BASE}/api/v5/stoptimes?stopId=${encodeURIComponent(station.id)}&time=${encodeURIComponent(isoWhen)}&n=25&arriveBy=false`;
+        const railModes = ['HIGHSPEED_RAIL', 'LONG_DISTANCE', 'NIGHT_RAIL', 'REGIONAL_FAST_RAIL', 'REGIONAL_RAIL'];
+        const modeParams = railModes.map(m => `mode=${m}`).join('&');
+        const stUrl = `${TRANSITOUS_BASE}/api/v5/stoptimes?stopId=${encodeURIComponent(station.id)}&time=${encodeURIComponent(isoWhen)}&n=15&arriveBy=false&${modeParams}`;
         logDebug(`Stoptimes URL: ${stUrl}`);
+        logDebug(`Hinweis: Abfrage ist auf Zug-Modi gefiltert (${railModes.join(', ')}), um Tram/Bus vom selben Sammel-Halt auszuschließen.`);
 
         const stopTimesRes = await fetchGeschuetzt(stUrl, 'Abfahrtsabfrage');
         const stopTimes = stopTimesRes.stopTimes || [];
