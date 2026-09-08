@@ -28,4 +28,252 @@
     .log-error { color: #f87171; }
     .log-warn { color: #fbbf24; }
   </style>
-</head> 
+</head>
+<body>
+
+  <div class="card">
+    <h3 style="margin-top:0;">DB Live-Daten Test</h3>
+
+    <div class="form-row">
+      <div class="form-group">
+        <label for="datum">Datum der Fahrt:</label>
+        <input type="date" id="datum">
+      </div>
+      <div class="form-group">
+        <label for="uhrzeit">Geplante Zeit:</label>
+        <input type="time" id="uhrzeit" value="09:17">
+      </div>
+    </div>
+
+    <div class="form-group">
+      <label for="bahnhof">Startbahnhof:</label>
+      <input type="text" id="bahnhof" value="Bremen Hbf" placeholder="z. B. Bremen Hbf">
+    </div>
+
+    <div class="form-group">
+      <label for="zug">Zugtyp & Nummer:</label>
+      <input type="text" id="zug" value="ICE 618" placeholder="z. B. ICE 618">
+    </div>
+
+    <button onclick="testAbfrage()">Echtzeitdaten prüfen</button>
+
+    <!-- Ergebnisbereich -->
+    <div id="ergebnis">Gib die Fahrtdaten ein und starte die Abfrage.</div>
+
+    <!-- Debug-Konsole mit Kopier-Button -->
+    <div id="debug-box">
+      <div class="debug-header">
+        <span>🐛 DEBUG LOGS</span>
+        <button class="copy-btn" onclick="copyDebugLogs()">📋 Logs kopieren</button>
+      </div>
+      <div id="debug-content">Bereit für Abfrage...</div>
+    </div>
+  </div>
+
+  <script>
+    document.getElementById('datum').valueAsDate = new Date();
+
+    // Wie lange (ms) auf eine Antwort gewartet wird, bevor wir selbst abbrechen
+    const FETCH_TIMEOUT_MS = 8000;
+
+    function logDebug(msg, level) {
+      const debugContent = document.getElementById('debug-content');
+      const time = new Date().toLocaleTimeString();
+      const cls = level === 'error' ? 'log-error' : (level === 'warn' ? 'log-warn' : '');
+      debugContent.innerHTML += `<div class="log-line ${cls}">[${time}] ${msg}</div>`;
+      const debugBox = document.getElementById('debug-box');
+      debugBox.scrollTop = debugBox.scrollHeight;
+    }
+
+    function copyDebugLogs() {
+      const debugContent = document.getElementById('debug-content');
+      const textToCopy = debugContent.innerText;
+
+      navigator.clipboard.writeText(textToCopy).then(() => {
+        alert("Debug-Logs wurden in die Zwischenablage kopiert!");
+      }).catch(err => {
+        alert("Fehler beim Kopieren: " + err);
+      });
+    }
+
+    function setErgebnis(html, kind) {
+      const ergebnisDiv = document.getElementById('ergebnis');
+      ergebnisDiv.innerHTML = html;
+      ergebnisDiv.classList.remove('warn', 'error');
+      if (kind === 'warn') ergebnisDiv.classList.add('warn');
+      if (kind === 'error') ergebnisDiv.classList.add('error');
+    }
+
+    // fetch mit Timeout, damit "hängende" Requests nicht ewig laden
+    async function fetchMitTimeout(url, timeoutMs) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    // Prüft eine Response robust: unterscheidet "API down / falsche Antwort" von echtem JSON
+    async function parseJsonResponse(res, schrittName) {
+      const contentType = res.headers.get('content-type') || '';
+      logDebug(`${schrittName}: HTTP ${res.status}, Content-Type: ${contentType || 'unbekannt'}`);
+
+      if (!res.ok) {
+        // Bekanntes Muster: v6.db.transport.rest liefert bei Ausfall eine HTML-Fehlerseite statt JSON
+        throw new ApiError(`${schrittName} fehlgeschlagen (HTTP ${res.status}). Die DB-Live-API ist vermutlich gerade nicht erreichbar.`);
+      }
+
+      if (!contentType.includes('application/json')) {
+        const text = await res.text();
+        logDebug(`${schrittName}: Unerwarteter Body (kein JSON): ${text.substring(0, 120)}...`, 'warn');
+        throw new ApiError(`${schrittName} lieferte keine gültigen Daten zurück. Die DB-Live-API ist vermutlich gerade nicht erreichbar oder überlastet.`);
+      }
+
+      return res.json();
+    }
+
+    // Eigener Fehlertyp, um "API-Ausfall" von Programmierfehlern zu unterscheiden
+    class ApiError extends Error {}
+
+    async function testAbfrage() {
+      const datumEingabe = document.getElementById('datum').value;
+      const uhrzeitEingabe = document.getElementById('uhrzeit').value;
+      const bahnhof = document.getElementById('bahnhof').value.trim();
+      const zugInput = document.getElementById('zug').value.trim();
+      const debugContent = document.getElementById('debug-content');
+      const btn = document.querySelector('button');
+
+      debugContent.innerHTML = "";
+      logDebug("=== INITIALISIERE ABFRAGE ===");
+
+      if (!datumEingabe || !uhrzeitEingabe || !bahnhof || !zugInput) {
+        setErgebnis("Bitte alle Felder ausfüllen.", 'warn');
+        logDebug("FEHLER: Unvollständige Formular-Eingabe.", 'error');
+        return;
+      }
+
+      setErgebnis("⏳ Lade Live-Daten der Deutschen Bahn...");
+      btn.disabled = true;
+      const cleanNum = zugInput.replace(/\D/g, '');
+
+      logDebug(`Datum: ${datumEingabe} | Uhrzeit: ${uhrzeitEingabe}`);
+      logDebug(`Startbahnhof: "${bahnhof}" | Zug: "${zugInput}" (Ziffern: ${cleanNum})`);
+
+      try {
+        // 1. Bahnhofs-ID über DB Transport API abfragen
+        const locUrl = `https://v6.db.transport.rest/locations?query=${encodeURIComponent(bahnhof)}&results=1`;
+        logDebug(`Location URL: ${locUrl}`);
+
+        let locRes;
+        try {
+          locRes = await fetchMitTimeout(locUrl, FETCH_TIMEOUT_MS);
+        } catch (netErr) {
+          if (netErr.name === 'AbortError') {
+            throw new ApiError('Zeitüberschreitung: Die DB-Live-API hat nicht rechtzeitig geantwortet. Sie ist vermutlich gerade überlastet oder nicht verfügbar.');
+          }
+          throw new ApiError('Verbindung zur DB-Live-API fehlgeschlagen (Netzwerk/Ausfall). Bitte später erneut versuchen oder die Daten manuell eintragen.');
+        }
+
+        const locations = await parseJsonResponse(locRes, 'Bahnhofssuche');
+
+        if (!locations || locations.length === 0) {
+          setErgebnis("Bahnhof nicht gefunden. Bitte Schreibweise prüfen (z. B. \"Bremen Hbf\").", 'warn');
+          logDebug("FEHLER: Bahnhofs-ID konnte nicht ermittelt werden.", 'warn');
+          return;
+        }
+
+        const stationId = locations[0].id;
+        const stationName = locations[0].name;
+        logDebug(`Bahnhof gefunden: ${stationName} (ID: ${stationId})`);
+
+        // ISO Zeitstempel für den gewählten Zeitpunkt zusammenbauen
+        const targetDateTime = new Date(`${datumEingabe}T${uhrzeitEingabe}:00`);
+        const isoWhen = targetDateTime.toISOString();
+
+        // 2. Abfahrten ab der gewählten Uhrzeit abfragen (Fenster 360 Minuten)
+        const depUrl = `https://v6.db.transport.rest/stops/${stationId}/departures?when=${encodeURIComponent(isoWhen)}&duration=360`;
+        logDebug(`Departures URL: ${depUrl}`);
+
+        let depRes;
+        try {
+          depRes = await fetchMitTimeout(depUrl, FETCH_TIMEOUT_MS);
+        } catch (netErr) {
+          if (netErr.name === 'AbortError') {
+            throw new ApiError('Zeitüberschreitung bei der Abfahrtsabfrage. Die DB-Live-API ist vermutlich gerade überlastet oder nicht verfügbar.');
+          }
+          throw new ApiError('Verbindung zur DB-Live-API fehlgeschlagen (Netzwerk/Ausfall). Bitte später erneut versuchen oder die Daten manuell eintragen.');
+        }
+
+        const departuresData = await parseJsonResponse(depRes, 'Abfahrtsabfrage');
+        const departures = departuresData.departures || departuresData;
+        logDebug(`Abfahrten im Zeitfenster geladen: ${departures.length} Einträge.`);
+
+        // 3. Zug über Zugnummer identifizieren
+        const target = departures.find(d => {
+          if (!d.line || !d.line.name) return false;
+          const lineNumStr = d.line.name.replace(/\D/g, '');
+          const fullName = d.line.name.trim().toUpperCase();
+          return lineNumStr === cleanNum || fullName === zugInput.toUpperCase();
+        });
+
+        if (target) {
+          logDebug(`Zug gefunden: ${target.line.name} nach ${target.direction}`);
+
+          const geplanteZeit = new Date(target.plannedWhen).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+          const tatsaechlicheZeit = target.when ? new Date(target.when).toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'}) : geplanteZeit;
+          const delayMins = target.delay ? Math.round(target.delay / 60) : 0;
+
+          let statusText = "";
+          if (target.cancelled) {
+            statusText = "<span style='color:red; font-weight:bold;'>Ausfall / Fällt aus</span>";
+            logDebug("Status: ZUGAUSFALL");
+          } else if (delayMins > 0) {
+            statusText = `<span style='color:red; font-weight:bold;'>+${delayMins} Min. Verspätung</span>`;
+            logDebug(`Status: VERSPÄTUNG (+${delayMins} Min)`);
+          } else {
+            statusText = "<span style='color:green; font-weight:bold;'>Pünktlich</span>";
+            logDebug("Status: PÜNKTLICH");
+          }
+
+          const formatiertesDatum = new Date(datumEingabe).toLocaleDateString('de-DE');
+
+          setErgebnis(`
+            <strong>Bahnhof:</strong> ${stationName}<br>
+            <strong>Datum:</strong> ${formatiertesDatum}<br>
+            <strong>Zug:</strong> ${target.line.name}<br>
+            <strong>Richtung:</strong> ${target.direction}<br>
+            <hr style="border:0; border-top:1px solid #ccc; margin:8px 0;">
+            <strong>Geplant:</strong> ${geplanteZeit} Uhr<br>
+            <strong>Tatsächlich:</strong> ${tatsaechlicheZeit} Uhr<br>
+            <strong>Status:</strong> ${statusText}
+          `);
+          logDebug("ERFOLG: Auswertung gerendert.");
+
+        } else {
+          const formatiertesDatum = new Date(datumEingabe).toLocaleDateString('de-DE');
+          setErgebnis(`Zug <strong>${zugInput}</strong> wurde am <strong>${formatiertesDatum}</strong> um <strong>${uhrzeitEingabe} Uhr</strong> an der Station <strong>${stationName}</strong> nicht gefunden. Möglicherweise fährt er zu diesem Zeitpunkt nicht oder der Name weicht ab.`, 'warn');
+          logDebug("FEHLER: Zugnummer nicht in den Abfahrten enthalten.", 'warn');
+        }
+
+      } catch (err) {
+        if (err instanceof ApiError) {
+          logDebug(`API-PROBLEM: ${err.message}`, 'error');
+          setErgebnis(`
+            <strong>⚠️ DB-Live-API aktuell nicht erreichbar</strong><br>
+            ${err.message}<br><br>
+            Bitte trage die Zeiten in diesem Fall manuell in dein Fahrtenbuch ein.
+          `, 'error');
+        } else {
+          logDebug(`UNERWARTETE EXCEPTION: ${err.message}`, 'error');
+          setErgebnis(`<strong>Unerwarteter Fehler:</strong> ${err.message}`, 'error');
+        }
+      } finally {
+        btn.disabled = false;
+      }
+    }
+  </script>
+
+</body>
+</html>
